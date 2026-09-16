@@ -40,7 +40,7 @@ npm run build
 npm run test:sites
 ```
 
-빌드 전에 모바일 런타임 무결성 검사가 자동 실행됩니다. 배포할 정적 파일은 **`dist/client/`**에 생성됩니다. `dist/server/`와 `.openai/hosting.json`은 템플릿의 별도 호스팅 출력이며 아래 Ubuntu 배포에서는 사용하지 않습니다.
+빌드 전에 모바일 런타임 무결성 검사가 자동 실행됩니다. 배포할 정적 파일의 위치는 `dist/client/`입니다. `dist/server/`와 `.openai/hosting.json`은 템플릿의 별도 호스팅 출력이며 아래 Ubuntu 배포에서는 사용하지 않습니다.
 
 ## Ubuntu 미니 PC에 배포하기
 
@@ -59,7 +59,7 @@ tailscale status
 
 ### 2. 내려받고 빌드하기
 
-`<저장소-HTTPS-주소>`를 이 GitHub 저장소의 clone 주소로 바꿉니다. 비공개 저장소는 서버의 GitHub 인증 또는 읽기 전용 deploy key가 필요합니다. 토큰을 URL이나 파일에 넣어 커밋하지 마세요.
+공개 저장소이므로 아래 명령으로 인증 없이 내려받을 수 있습니다.
 
 ```sh
 git clone https://github.com/esin3329/taste-museum.git taste-museum
