@@ -42,6 +42,14 @@ test('persists a text item across server instances', async () => {
       body: JSON.stringify({ title: '비 오는 날', kind: 'text', text: '천천히 걷기', note: '기억', room: null }),
     });
     assert.equal(response.status, 201);
+    const created = await response.json();
+    const moved = await fetch(`${first.base}/api/items/${created.item.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ room: 2 }),
+    });
+    assert.equal(moved.status, 200);
+    assert.equal((await moved.json()).item.room, 2);
   } finally {
     await stop(first.server);
   }
@@ -51,6 +59,7 @@ test('persists a text item across server instances', async () => {
     const result = await (await fetch(`http://127.0.0.1:${second.address().port}/api/items`)).json();
     assert.equal(result.items.length, 1);
     assert.equal(result.items[0].title, '비 오는 날');
+    assert.equal(result.items[0].room, 2);
   } finally {
     await stop(second);
   }
