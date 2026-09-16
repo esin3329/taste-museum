@@ -1,0 +1,24 @@
+[Unit]
+Description=Taste Museum personal collection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=taste-museum
+WorkingDirectory=/opt/taste-museum
+Environment=NODE_ENV=production
+Environment=MUSEUM_DATA_DIR=/var/lib/taste-museum
+Environment=HOST=127.0.0.1
+Environment=PORT=8080
+ExecStart=/usr/bin/node /opt/taste-museum/server/index.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/taste-museum
+
+[Install]
+WantedBy=multi-user.target

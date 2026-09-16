@@ -2,7 +2,7 @@
 
 사진, 문장, 링크처럼 마음에 남은 것들을 전시실에 모아 둘러보는 개인 박물관 프로토타입입니다. 국립중앙박물관·메트로폴리탄·루브르의 차분한 전시 경험에서 영감을 받아, 로비의 입구와 평면 안내도로 전시실을 탐색합니다.
 
-> 현재는 **인터랙티브 프로토타입**입니다. 추가한 소장품과 전시실 배치는 브라우저 메모리에만 저장되며 **새로고침하면 초기화됩니다**. 아래 방법으로 배포해도 영구 저장이나 기기 간 동기화가 생기지 않습니다.
+> 현재는 인터랙티브 프로토타입에서 개인 서버용 1차 구현으로 넘어가는 단계입니다. 서버 모드로 실행하면 폰에서 올린 소장품과 전시실 배치가 SQLite와 미니 PC 파일 저장소에 남습니다. 로그인은 없으므로 Tailscale 네트워크 접근 정책으로 사용자를 제한합니다.
 
 <img src="qa/lobby-screen.png" alt="나의 취향 박물관 모바일 로비" width="393" />
 
@@ -30,21 +30,22 @@ Node.js 24와 npm을 준비하고 저장소 루트에서 실행합니다.
 
 ```sh
 npm ci
-npm run dev -- --host 127.0.0.1 --port 5187
+npm run build
+npm start
 ```
 
-브라우저에서 `http://127.0.0.1:5187`을 엽니다.
+브라우저에서 `http://127.0.0.1:8080`을 엽니다. `npm run dev -- --host 127.0.0.1 --port 5187`은 화면 작업용 Vite 미리보기이며, API가 없어서 실제 업로드·영구 저장은 동작하지 않습니다.
 
 ```sh
 npm run build
 npm run test:sites
 ```
 
-빌드 전에 모바일 런타임 무결성 검사가 자동 실행됩니다. 배포할 정적 파일의 위치는 `dist/client/`입니다. `dist/server/`와 `.openai/hosting.json`은 템플릿의 별도 호스팅 출력이며 아래 Ubuntu 배포에서는 사용하지 않습니다.
+빌드 전에 모바일 런타임 무결성 검사가 자동 실행됩니다. 서버는 `dist/client/`를 정적으로 제공하고 `/api`로 SQLite와 업로드 API를 제공합니다.
 
 ## Ubuntu 미니 PC에 배포하기
 
-이 안내는 **사용자가 직접 실행하는 배포 절차**입니다. 저장소 업로드만으로 서버가 배포되지는 않습니다.
+이 안내는 이미 Ubuntu가 설치된 미니 PC에 프로젝트를 배포하는 절차입니다. Ubuntu 자체를 설치하는 과정은 포함하지 않습니다.
 
 ### 1. 준비와 접속
 
@@ -59,32 +60,48 @@ tailscale status
 
 ### 2. 내려받고 빌드하기
 
-공개 저장소이므로 아래 명령으로 인증 없이 내려받을 수 있습니다.
+공개 저장소이므로 아래 명령으로 인증 없이 내려받을 수 있습니다. 기존에 같은 경로가 있으면 먼저 백업하거나 별도 디렉터리를 사용합니다.
 
 ```sh
-git clone https://github.com/esin3329/taste-museum.git taste-museum
-cd taste-museum
+sudo useradd --system --home /opt/taste-museum --shell /usr/sbin/nologin taste-museum || true
+sudo mkdir -p /opt/taste-museum /var/lib/taste-museum
+sudo chown -R "$USER":"$USER" /opt/taste-museum
+git clone https://github.com/esin3329/taste-museum.git /opt/taste-museum
+cd /opt/taste-museum
 npm ci
 npm run build
 test -f dist/client/index.html
 ```
 
-### 3. 정적 파일 제공하기
+Node.js 경로가 `/usr/bin/node`가 아니라면 `server/systemd/museum.service`의 `ExecStart` 경로를 `command -v node` 결과로 바꿉니다. 빌드가 끝난 뒤 런타임 데이터 디렉터리의 소유권을 설정합니다.
 
-Tailscale Serve는 디렉터리의 정적 파일을 제공할 수 있습니다. 여기서는 다른 HTTPS 서비스와 충돌할 가능성을 줄이기 위해 **8443** 포트를 사용합니다. 먼저 기존 설정을 확인하고, 이미 8443을 쓰고 있다면 다른 비어 있는 HTTPS 포트를 선택하세요.
+```sh
+sudo chown -R taste-museum:taste-museum /var/lib/taste-museum
+sudo install -m 0644 /opt/taste-museum/server/systemd/museum.service /etc/systemd/system/taste-museum.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now taste-museum
+curl http://127.0.0.1:8080/api/health
+sudo systemctl status taste-museum --no-pager
+```
+
+`curl` 응답이 `{"ok":true}`이면 앱 서버가 실행된 상태입니다. 로그는 `sudo journalctl -u taste-museum -n 50 --no-pager`로 확인합니다.
+
+### 3. Tailscale로 연결하기
+
+앱 서버는 로컬호스트에만 열고, Tailscale Serve가 tailnet 안에서 HTTPS로 전달하도록 구성합니다. Tailscale Serve는 로컬 서비스를 tailnet에 공유하는 기능입니다. 먼저 기존 설정을 확인하고, 이미 8443을 쓰고 있다면 다른 HTTPS 포트를 선택하세요.
 
 ```sh
 sudo tailscale serve status
 sudo systemctl enable --now tailscaled
-sudo tailscale serve --bg --https=8443 "$(pwd)/dist/client"
+sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080
 sudo tailscale serve status
 ```
 
-처음 실행할 때 HTTPS 활성화 안내가 나오면 표시된 관리 페이지에서 설정을 완료한 뒤 다시 실행합니다. 명령이 출력하는 `https://<장치이름>.<tailnet이름>.ts.net:8443` 주소로 접속합니다. Tailscale IP를 HTTPS 주소로 직접 입력하는 대신 출력된 도메인을 사용하세요.
+처음 실행할 때 HTTPS 활성화 안내가 나오면 표시된 관리 페이지에서 설정을 완료합니다. 명령이 출력하는 `https://<장치이름>.<tailnet이름>.ts.net:8443` 주소로 접속합니다. 휴대전화에서도 Tailscale을 켠 뒤 이 주소를 엽니다.
 
-`--bg` 설정은 백그라운드에서 유지됩니다. 재부팅 후에는 `tailscaled` 상태와 `tailscale serve status`를 확인하고 접속을 확인하세요. 별도 개발 서버나 Node.js 상주 프로세스는 필요하지 않습니다.
+`--bg` 설정은 백그라운드에서 유지됩니다. 앱 자체는 systemd가 재부팅 후 자동으로 다시 실행합니다. 앱 포트 8080은 `127.0.0.1`에만 바인딩되므로 Tailscale Serve를 거치지 않은 외부 접근은 받지 않습니다.
 
-접속 범위는 Tailscale 접근 정책을 따릅니다. 혼자 이용하려면 해당 서비스에 본인 계정·기기만 접근하도록 정책을 설정합니다. 이 안내에서는 인터넷 공개용 Funnel이나 공유기 포트 포워딩을 사용하지 않습니다. 저장소 전체가 아니라 **`dist/client`만** 제공합니다.
+접속 범위는 Tailscale 접근 정책을 따릅니다. 혼자 이용하려면 tailnet에 본인 기기만 남기고, 공유기 포트 포워딩이나 인터넷 공개용 Funnel은 사용하지 않습니다.
 
 공식 문서: [Tailscale Serve 명령](https://tailscale.com/docs/reference/tailscale-cli/serve), [정적 사이트 제공 예시](https://tailscale.com/docs/reference/examples/serve).
 
@@ -99,9 +116,10 @@ npm run build
 sudo tailscale serve status
 ```
 
-같은 디렉터리를 유지했다면 Serve를 다시 설정하지 않아도 됩니다. 서비스 중지는 아래 명령으로 이 포트만 해제합니다.
+같은 디렉터리를 유지했다면 Serve를 다시 설정하지 않아도 됩니다. 서비스 중지는 아래 명령으로 수행합니다.
 
 ```sh
+sudo systemctl disable --now taste-museum
 sudo tailscale serve --https=8443 off
 ```
 
@@ -111,14 +129,17 @@ sudo tailscale serve --https=8443 off
 2. 휴대전화 Wi-Fi를 끄고, 이동통신과 Tailscale을 켠 뒤 같은 주소를 엽니다.
 3. 로비 → 안내도 → 전시실 → 소장품 상세를 확인합니다.
 4. 문장 추가 → 수집함 → 전시실 배치를 확인합니다.
-5. 새로고침하면 예시 상태로 돌아오는 것은 현재 프로토타입의 정상 동작입니다.
+5. 새로고침한 뒤에도 방금 올린 소장품이 남아 있는지 확인합니다.
 
 ## 코드 구성
 
 ```text
-src/Prototype.tsx       화면, 이동, 소장품의 메모리 상태
+src/Prototype.tsx       화면, 이동, API 연동 상태
 src/prototype.css       박물관 화면 스타일
 src/mobile/            모바일 미리보기 런타임
+server/index.mjs        정적 파일·업로드 API 서버
+server/db.mjs           SQLite 스키마와 소장품 CRUD
+server/systemd/         Ubuntu 자동 실행 서비스 템플릿
 public/museum/         생성한 전시 이미지와 안내도
 qa/                    화면 캡처
 tests/                 템플릿 검증 코드
@@ -129,8 +150,8 @@ PROTOTYPE.md           프로토타입 범위와 설계 기록
 
 ## 검증과 앞으로의 구현
 
-`npm run check:runtime`은 보호된 런타임 파일을 검사하고, `npm run build`는 TypeScript 검사와 배포 파일 생성을 수행합니다. `npm run test:sites`는 템플릿의 Worker 테스트이며 실제 Ubuntu 배포를 검증하는 명령은 아닙니다.
+`npm run check:runtime`은 보호된 런타임 파일을 검사하고, `npm run build`는 TypeScript 검사와 클라이언트 빌드를 수행합니다. `npm run test:server`는 SQLite·업로드·재시작 지속성을 확인하고, `npm run test:sites`는 템플릿의 Worker 테스트입니다.
 
 `npm run test:runtime`에는 Playwright 브라우저 설치가 필요합니다. 현재 작업 환경에서는 Chromium 실행 파일이 없어 이 자동 UI 테스트를 완료하지 못했습니다. 실제 Ubuntu 서버 배포와 재부팅 후 접속도 아직 검증하지 않았습니다.
 
-실사용 단계에서 추가할 기능은 소장품·전시 배치의 영구 저장, 사진 파일 저장, 기기 간 동일 데이터 조회, 백업·복원입니다. 현재 버전에는 이 기능과 소장품 편집·삭제, 전시실 생성·편집이 구현되어 있지 않습니다.
+현재 구현은 소장품 추가(사진·문장·링크), SQLite 영구 저장, 사진 파일 업로드, 수집함 배치까지 제공합니다. 소장품 편집·삭제, 전시실 생성·편집, 자동 백업·복원은 다음 단계입니다. 사진 원본은 미니 PC에 저장되며, 현재 HEIC는 원본 보관만 하고 브라우저 호환 썸네일 변환은 아직 제공하지 않습니다.
