@@ -111,6 +111,8 @@ sudo systemctl enable --now nginx
 
 Tailscale은 네트워크 연결만 확인합니다. <code>tailscale status</code>에서 미니 PC의 Tailscale IP를 확인한 뒤, Tailscale이 연결된 휴대전화나 PC에서 <code>http://&lt;미니PC의-Tailscale-IP&gt;/</code>를 엽니다. 별도 인증서가 있는 리버스 프록시를 사용하면 해당 HTTPS 주소를 사용합니다. Nginx는 <code>dist/client/</code>를 직접 제공하고 <code>/api/*</code>와 <code>/uploads/*</code>를 Node.js로 전달합니다.
 
+설정 템플릿은 이식성을 위해 80번 포트를 전체 인터페이스에서 수신합니다. Tailscale 경로만 허용하려면 미니 PC의 방화벽에서 <code>tailscale0</code> 인터페이스의 80/443만 허용하거나, 템플릿의 <code>listen</code> 주소를 미니 PC의 Tailscale IP로 바꿉니다. 공유기 포트 포워딩은 설정하지 않습니다.
+
 Node.js가 정상인지 먼저 확인하려면 다음 명령을 사용합니다.
 
 ~~~sh
