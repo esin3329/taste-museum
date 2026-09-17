@@ -65,7 +65,7 @@ export function openDatabase(dataDir) {
   const get = db.prepare('SELECT id, title, kind, note, room, image, text, url FROM items WHERE id = ?');
   const insert = db.prepare(`INSERT INTO items (id, title, kind, note, room, image, text, url, sort_order, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT MAX(sort_order) + 1 FROM items WHERE room IS ?), 0), ?, ?)`);
-  const update = db.prepare('UPDATE items SET title = COALESCE(?, title), note = COALESCE(?, note), room = COALESCE(?, room), updated_at = ? WHERE id = ?');
+  const remove = db.prepare('DELETE FROM items WHERE id = ?');
 
   function normalize(input) {
     const kind = String(input.kind || '');
@@ -99,12 +99,48 @@ export function openDatabase(dataDir) {
     updateItem: (id, input) => {
       const existing = get.get(id);
       if (!existing) return null;
-      const room = input.room === undefined ? existing.room : normalRoom(input.room);
-      const title = input.title === undefined ? null : String(input.title).trim();
-      const note = input.note === undefined ? null : String(input.note).trim().slice(0, 4000);
-      if (title !== null && (!title || title.length > 200)) throw new Error('invalid title');
-      update.run(title, note, room, new Date().toISOString(), id);
+      const patch = {};
+      if (Object.prototype.hasOwnProperty.call(input, 'title')) {
+        const title = String(input.title ?? '').trim();
+        if (!title || title.length > 200) throw new Error('invalid title');
+        patch.title = title;
+      }
+      if (Object.prototype.hasOwnProperty.call(input, 'note')) {
+        patch.note = String(input.note ?? '').trim().slice(0, 4000);
+      }
+      if (Object.prototype.hasOwnProperty.call(input, 'room')) patch.room = normalRoom(input.room);
+      if (Object.prototype.hasOwnProperty.call(input, 'text')) {
+        const text = input.text === null ? null : String(input.text).slice(0, 10000);
+        patch.text = text && text.trim() ? text : null;
+      }
+      if (Object.prototype.hasOwnProperty.call(input, 'url')) {
+        const url = input.url === null || input.url === '' ? null : String(input.url).trim();
+        if (url && !/^https?:\/\//i.test(url)) throw new Error('url must start with http:// or https://');
+        patch.url = url;
+      }
+      if (Object.prototype.hasOwnProperty.call(input, 'image')) {
+        const image = input.image === null || input.image === '' ? null : String(input.image);
+        if (image && !image.startsWith('/museum/') && !image.startsWith('/uploads/')) throw new Error('invalid image path');
+        patch.image = image;
+      }
+      const nextText = Object.prototype.hasOwnProperty.call(patch, 'text') ? patch.text : existing.text;
+      const nextUrl = Object.prototype.hasOwnProperty.call(patch, 'url') ? patch.url : existing.url;
+      if (existing.kind === 'text' && !nextText?.trim()) throw new Error('text is required');
+      if (existing.kind === 'link' && (!nextUrl || !/^https?:\/\//i.test(nextUrl))) throw new Error('url must start with http:// or https://');
+      const fields = Object.keys(patch);
+      if (fields.length) {
+        const values = fields.map((field) => patch[field]);
+        const assignments = fields.map((field) => `${field} = ?`).join(', ');
+        values.push(new Date().toISOString(), id);
+        db.prepare(`UPDATE items SET ${assignments}, updated_at = ? WHERE id = ?`).run(...values);
+      }
       return cleanItem(get.get(id));
+    },
+    deleteItem: (id) => {
+      const existing = get.get(id);
+      if (!existing) return null;
+      remove.run(id);
+      return cleanItem(existing);
     },
     close: () => db.close(),
   };

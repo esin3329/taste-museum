@@ -1,0 +1,12 @@
+[Unit]
+Description=Taste Museum data backup
+After=taste-museum.service
+
+[Service]
+Type=oneshot
+User=taste-museum
+WorkingDirectory=/opt/taste-museum
+Environment=MUSEUM_DATA_DIR=/var/lib/taste-museum
+Environment=MUSEUM_BACKUP_DIR=/var/backups/taste-museum
+Environment=MUSEUM_BACKUP_KEEP=14
+ExecStart=/usr/bin/node /opt/taste-museum/scripts/backup.mjs

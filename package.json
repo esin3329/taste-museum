@@ -12,6 +12,8 @@
     "predev": "npm run check:runtime",
     "dev": "vite",
     "start": "node server/index.mjs",
+    "backup": "node scripts/backup.mjs",
+    "restore": "node scripts/restore.mjs",
     "prebuild": "npm run check:runtime",
     "build": "tsc && vite build && node scripts/prepare-sites-build.mjs"
   },

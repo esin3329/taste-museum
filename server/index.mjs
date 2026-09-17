@@ -76,9 +76,56 @@ export function createServer({ dataDir = process.env.MUSEUM_DATA_DIR || path.joi
         return send(res, 201, { item: db.insertItem(input) });
       }
       const itemMatch = url.pathname.match(/^\/api\/items\/([^/]+)$/);
+      const replacementMatch = url.pathname.match(/^\/api\/items\/([^/]+)\/upload$/);
+      if (replacementMatch && req.method === 'POST') {
+        const id = decodeURIComponent(replacementMatch[1]);
+        const existing = db.getItem(id);
+        if (!existing) return send(res, 404, { error: 'item not found' });
+        if (existing.kind !== 'photo') return send(res, 409, { error: 'only photo items can replace an image' });
+        const contentType = req.headers['content-type'] || '';
+        const boundary = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i)?.[1] || contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i)?.[2];
+        if (!boundary) return send(res, 400, { error: 'multipart boundary is required' });
+        const parts = parseMultipart(await bodyBuffer(req, MAX_UPLOAD), boundary);
+        const file = parts.find((part) => part.filename !== undefined && part.name === 'file');
+        if (!file || !file.data.length || !file.contentType.toLowerCase().startsWith('image/')) return send(res, 400, { error: 'an image file is required' });
+        const extension = extensionFor(file.contentType, file.filename);
+        if (!extension) return send(res, 415, { error: 'unsupported image type' });
+        const fields = Object.fromEntries(parts.filter((part) => part.filename === undefined).map((part) => [part.name, part.data.toString('utf8')]));
+        await mkdir(uploadDir, { recursive: true });
+        const uploadId = crypto.randomUUID();
+        const relative = `/uploads/${uploadId}${extension}`;
+        const target = path.join(uploadDir, `${uploadId}${extension}`);
+        await writeFile(target, file.data, { flag: 'wx' });
+        try {
+          const patch = { image: relative };
+          if (Object.prototype.hasOwnProperty.call(fields, 'title')) patch.title = fields.title;
+          if (Object.prototype.hasOwnProperty.call(fields, 'note')) patch.note = fields.note;
+          if (Object.prototype.hasOwnProperty.call(fields, 'room')) patch.room = fields.room;
+          const item = db.updateItem(id, patch);
+          if (!item) return send(res, 404, { error: 'item not found' });
+          if (existing.image?.startsWith('/uploads/')) {
+            const oldPath = safeUploadPath(dataDir, existing.image);
+            if (oldPath) await unlink(oldPath).catch(() => {});
+          }
+          return send(res, 200, { item });
+        } catch (error) {
+          await unlink(target).catch(() => {});
+          throw error;
+        }
+      }
       if (itemMatch && req.method === 'PATCH') {
         const item = db.updateItem(decodeURIComponent(itemMatch[1]), JSON.parse((await bodyBuffer(req, 1024 * 1024)).toString('utf8')));
         return item ? send(res, 200, { item }) : send(res, 404, { error: 'item not found' });
+      }
+      if (itemMatch && req.method === 'DELETE') {
+        const id = decodeURIComponent(itemMatch[1]);
+        const item = db.deleteItem(id);
+        if (!item) return send(res, 404, { error: 'item not found' });
+        if (item.image?.startsWith('/uploads/')) {
+          const filePath = safeUploadPath(dataDir, item.image);
+          if (filePath) await unlink(filePath).catch(() => {});
+        }
+        return send(res, 200, { item });
       }
       if (url.pathname === '/api/upload' && req.method === 'POST') {
         const contentType = req.headers['content-type'] || '';
