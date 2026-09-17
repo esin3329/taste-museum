@@ -2,7 +2,7 @@
 
 사진, 문장, 링크처럼 마음에 남은 것들을 전시실에 모아 둘러보는 개인 박물관입니다. 국립중앙박물관·메트로폴리탄·루브르의 차분한 전시 경험에서 영감을 받아, 로비의 입구와 평면 안내도로 전시실을 탐색합니다.
 
-이 프로젝트는 **로그인 없는 1인용 웹**입니다. 미니 PC에서 서버를 실행하고, 휴대전화와 PC의 브라우저가 Tailscale을 통해 같은 박물관에 접속합니다. 소장품 원본과 데이터는 GitHub가 아니라 미니 PC의 데이터 디렉터리에 저장됩니다.
+이 프로젝트는 **로그인 없는 1인용 웹**입니다. 미니 PC에서 이미 운영 중인 Nginx·Node.js 컨테이너에 연결하고, 휴대전화와 PC의 브라우저는 Tailscale 사설 네트워크를 통해 박물관에 접속합니다. 소장품 원본과 데이터는 GitHub가 아니라 Node.js 컨테이너에 연결된 영속 볼륨에 저장됩니다.
 
 <img src="qa/lobby-screen.png" alt="나의 취향 박물관 모바일 로비" width="393" />
 
@@ -47,136 +47,73 @@ npm start
 
 로컬 데이터는 기본적으로 <code>server/data/</code>에 만들어집니다. 이 폴더는 Git에 올라가지 않습니다.
 
-### Ubuntu 미니 PC에 배포하기
+### 기존 컨테이너 환경에 배포하기
 
-이 절차는 Ubuntu가 이미 설치된 미니 PC에 프로젝트를 배포하는 방법입니다. Ubuntu 자체 설치는 포함하지 않습니다.
+이 저장소는 **Nginx와 Node.js 컨테이너가 이미 운영 중인 환경**에 앱을 연결하는 것을 기본으로 합니다. 저장소에서 Docker 엔진, Nginx, Node.js, Tailscale을 설치하지 않습니다. Tailscale은 호스트 또는 별도 네트워크 컨테이너에서 사설 네트워크 연결만 담당합니다.
 
-#### 1. 준비
+#### 컨테이너 계약
 
-미니 PC에 Git, Node.js 24, npm, Nginx(또는 호환되는 리버스 프록시), Tailscale이 설치되어 있어야 합니다. Tailscale은 사설 네트워크 연결에만 사용하고, 웹 요청 전달은 Nginx가 담당합니다. 접속할 휴대전화와 PC도 같은 Tailscale 네트워크에 연결합니다.
+- **Nginx 컨테이너**: 외부 80/443 포트를 공개하고 `dist/client/`를 읽기 전용으로 마운트합니다. `/api/*`와 `/uploads/*`는 Node.js 컨테이너로 전달합니다.
+- **Node.js 컨테이너**: 저장소의 `server/`와 빌드 결과를 사용할 수 있어야 하며 `0.0.0.0:8080`에서 실행합니다. `MUSEUM_DATA_DIR`를 영속 볼륨에 연결합니다.
+- **컨테이너 네트워크**: 두 컨테이너가 같은 내부 네트워크에 있어야 합니다. Nginx 템플릿의 `museum-api:8080`에서 `museum-api`는 실제 Node.js 서비스명으로 바꿉니다.
+- **데이터 볼륨**: SQLite와 `uploads/`는 이미지나 컨테이너 레이어에 넣지 않고 영속 볼륨에 둡니다.
 
-~~~sh
-ssh <우분투계정>@<미니PC의-Tailscale-IP>
-node --version
-npm --version
-sudo systemctl enable --now tailscaled
-tailscale status
-~~~
+#### 1. 빌드 결과 준비
 
-#### 2. 내려받고 서버 설치
-
-공개 저장소이므로 인증 없이 내려받을 수 있습니다. <code>/opt/taste-museum</code>이 이미 있으면 기존 폴더를 백업한 뒤 진행합니다.
+빌드는 기존 CI, 작업 호스트 또는 Node.js 컨테이너에서 수행할 수 있습니다. 중요한 결과물은 Nginx 컨테이너에 마운트할 `dist/client/`입니다.
 
 ~~~sh
-sudo useradd --system --home /opt/taste-museum --shell /usr/sbin/nologin taste-museum || true
-sudo mkdir -p /opt/taste-museum /var/lib/taste-museum
-sudo chown -R "$USER":"$USER" /opt/taste-museum
-git clone https://github.com/esin3329/taste-museum.git /opt/taste-museum
-cd /opt/taste-museum
+git clone https://github.com/esin3329/taste-museum.git
+cd taste-museum
 npm ci
 npm run build
 test -f dist/client/index.html
 ~~~
 
-서비스 계정이 데이터 폴더를 쓸 수 있게 하고 systemd 서비스를 등록합니다. Node.js 경로가 <code>/usr/bin/node</code>와 다르면 <code>server/systemd/museum.service</code>의 <code>ExecStart</code>를 <code>command -v node</code> 결과로 바꿉니다.
+`dist/client/`를 Nginx 컨테이너의 `/usr/share/nginx/html`에 읽기 전용으로 마운트하거나 이미지 빌드 단계에서 복사합니다.
 
-~~~sh
-sudo chown -R taste-museum:taste-museum /var/lib/taste-museum
-sudo install -m 0644 server/systemd/museum.service /etc/systemd/system/taste-museum.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now taste-museum
-curl http://127.0.0.1:8080/api/health
-sudo systemctl status taste-museum --no-pager
+#### 2. Node.js 컨테이너 환경 변수
+
+Node.js 컨테이너에는 다음 값을 적용합니다. 컨테이너 밖의 경로가 아니라 컨테이너 안의 마운트 경로를 사용합니다.
+
+~~~text
+NODE_ENV=production
+HOST=0.0.0.0
+PORT=8080
+MUSEUM_DATA_DIR=/var/lib/taste-museum
 ~~~
 
-<code>curl</code> 응답이 <code>{"ok":true}</code>이면 앱 서버가 실행된 상태입니다. 로그는 아래 명령으로 확인합니다.
+실행 명령은 `npm start`이며, 컨테이너의 `/var/lib/taste-museum`에는 SQLite와 `uploads/`가 계속 남는 영속 볼륨을 연결합니다. Node.js 컨테이너 안에서 `curl http://127.0.0.1:8080/api/health`가 `{"ok":true}`를 반환해야 합니다.
 
-~~~sh
-sudo journalctl -u taste-museum -n 50 --no-pager
-~~~
+#### 3. Nginx 컨테이너 연결
 
-#### 3. Nginx 리버스 프록시 설정
+설정 템플릿은 [server/nginx/taste-museum.conf](server/nginx/taste-museum.conf)입니다. Nginx 컨테이너의 설정 디렉터리에 읽기 전용으로 마운트하고, `root`는 `/usr/share/nginx/html`을 유지합니다. 별도 Node.js 컨테이너를 사용하면 `museum-api:8080`을 실제 서비스명으로 바꿉니다. 같은 컨테이너에서 두 프로세스를 실행하는 경우에만 `127.0.0.1:8080`을 사용합니다.
 
-Node.js 앱은 <code>127.0.0.1:8080</code>에만 열고, Nginx가 정적 파일을 제공하면서 API와 업로드 요청을 Node.js로 전달합니다. 설정 템플릿은 [server/nginx/taste-museum.conf](server/nginx/taste-museum.conf)입니다.
+Nginx 컨테이너에서 `nginx -t`와 reload를 실행한 뒤, Nginx가 공개한 포트에서 `/api/health`를 확인합니다. 이 저장소의 프론트엔드는 같은 origin의 `/api`와 `/uploads`를 호출하므로 별도 CORS 설정이 필요하지 않습니다.
 
-~~~sh
-sudo apt update
-sudo apt install -y nginx
-sudo install -m 0644 server/nginx/taste-museum.conf /etc/nginx/sites-available/taste-museum
-sudo ln -sfn /etc/nginx/sites-available/taste-museum /etc/nginx/sites-enabled/taste-museum
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t
-sudo systemctl enable --now nginx
-~~~
+#### 4. Tailscale 네트워크 연결
 
-Tailscale은 네트워크 연결만 확인합니다. <code>tailscale status</code>에서 미니 PC의 Tailscale IP를 확인한 뒤, Tailscale이 연결된 휴대전화나 PC에서 <code>http://&lt;미니PC의-Tailscale-IP&gt;/</code>를 엽니다. 별도 인증서가 있는 리버스 프록시를 사용하면 해당 HTTPS 주소를 사용합니다. Nginx는 <code>dist/client/</code>를 직접 제공하고 <code>/api/*</code>와 <code>/uploads/*</code>를 Node.js로 전달합니다.
+Tailscale이 연결된 기기에서 Nginx 컨테이너가 공개한 포트로 접속합니다. 예를 들어 미니 PC의 Tailscale IP가 `100.73.115.1`이고 Nginx가 80번 포트를 공개하면 `http://100.73.115.1/`을 엽니다. HTTPS는 기존 리버스 프록시의 인증서 설정을 사용합니다. `tailscale serve`나 Funnel은 사용하지 않습니다.
 
-설정 템플릿은 이식성을 위해 80번 포트를 전체 인터페이스에서 수신합니다. Tailscale 경로만 허용하려면 미니 PC의 방화벽에서 <code>tailscale0</code> 인터페이스의 80/443만 허용하거나, 템플릿의 <code>listen</code> 주소를 미니 PC의 Tailscale IP로 바꿉니다. 공유기 포트 포워딩은 설정하지 않습니다.
+외부에 직접 공개할 필요가 없으면 호스트 방화벽과 Tailscale ACL에서 Nginx 포트만 허용합니다. Node.js 컨테이너의 8080 포트는 호스트에 공개하지 않고 내부 컨테이너 네트워크에서만 접근하게 합니다.
 
-Node.js가 정상인지 먼저 확인하려면 다음 명령을 사용합니다.
+#### 5. 백업·복원과 업데이트
 
-~~~sh
-curl http://127.0.0.1:8080/api/health
-curl http://127.0.0.1/api/health
-sudo systemctl status nginx --no-pager
-~~~
+백업은 기존 스케줄러 또는 별도 작업 컨테이너가 Node.js 이미지 안의 `scripts/backup.mjs`를 실행하도록 연결합니다. `MUSEUM_DATA_DIR`와 `MUSEUM_BACKUP_DIR` 모두 영속 볼륨을 사용하고, 복원 전에는 Node.js 컨테이너를 중지합니다. 컨테이너를 교체해도 데이터 볼륨은 삭제하지 않습니다.
 
-#### 4. 백업과 복원
+업데이트 순서는 다음과 같습니다.
 
-백업은 SQLite 체크포인트 후 데이터베이스와 업로드 파일을 하나의 날짜별 폴더에 저장합니다. 기본 보존 개수는 14개입니다.
+1. 새 소스를 받아 `npm ci`와 `npm run build`를 실행합니다.
+2. 새 `dist/client/`를 Nginx 컨테이너에 마운트하거나 이미지에 복사합니다.
+3. Node.js 컨테이너를 새 이미지 또는 새 소스로 재시작합니다.
+4. Nginx를 reload하고 `/api/health`와 업로드 흐름을 확인합니다.
 
-~~~sh
-sudo mkdir -p /var/backups/taste-museum
-sudo chown taste-museum:taste-museum /var/backups/taste-museum
-sudo -u taste-museum env \
-  MUSEUM_DATA_DIR=/var/lib/taste-museum \
-  MUSEUM_BACKUP_DIR=/var/backups/taste-museum \
-  /usr/bin/node /opt/taste-museum/scripts/backup.mjs
-ls -lah /var/backups/taste-museum
-~~~
-
-매일 새벽에 자동 백업하려면 timer를 등록합니다.
-
-~~~sh
-sudo install -m 0644 /opt/taste-museum/server/systemd/museum-backup.service /etc/systemd/system/taste-museum-backup.service
-sudo install -m 0644 /opt/taste-museum/server/systemd/museum-backup.timer /etc/systemd/system/taste-museum-backup.timer
-sudo systemctl daemon-reload
-sudo systemctl enable --now taste-museum-backup.timer
-systemctl list-timers taste-museum-backup.timer --no-pager
-~~~
-
-복원할 때는 앱을 중지합니다. <code>--force</code>를 사용해도 기존 데이터 폴더는 먼저 <code>*.before-restore-*</code>로 이동합니다.
-
-~~~sh
-sudo systemctl stop taste-museum
-sudo -u taste-museum env MUSEUM_DATA_DIR=/var/lib/taste-museum \
-  /usr/bin/node /opt/taste-museum/scripts/restore.mjs \
-  /var/backups/taste-museum/<백업-폴더> /var/lib/taste-museum --force
-sudo systemctl start taste-museum
-curl http://127.0.0.1:8080/api/health
-~~~
-
-#### 5. 업데이트와 중지
-
-~~~sh
-cd /opt/taste-museum
-git pull --ff-only
-npm ci
-npm run build
-sudo systemctl restart taste-museum
-~~~
-
-리버스 프록시 설정은 같은 경로와 포트를 유지하는 한 다시 만들 필요가 없습니다. 서비스를 중지하려면 다음을 실행합니다.
-
-~~~sh
-sudo systemctl disable --now taste-museum
-sudo systemctl disable --now nginx
-~~~
+컨테이너 이름, 볼륨 이름, 이미지 빌드 방식은 기존 운영 환경을 유지하고, 이 저장소에서는 위의 경로와 환경 변수 계약만 지킵니다.
 
 #### 6. 접속 확인
 
-1. Tailscale이 연결된 PC에서 미니 PC의 Tailscale IP와 리버스 프록시 포트로 접속합니다.
-2. 휴대전화에서 Wi-Fi 또는 이동통신과 Tailscale을 켠 뒤 같은 주소를 엽니다.
+1. Tailscale이 연결된 PC에서 Nginx의 Tailscale 주소를 엽니다.
+2. 휴대전화에서 Tailscale을 켜고 같은 주소에 접속합니다.
 3. 로비 → 안내도 → 전시실 → 소장품 상세를 확인합니다.
 4. 소장품 추가 → 수집함 → 전시실 배치를 확인합니다.
 5. 새로고침한 뒤 방금 올린 소장품이 남아 있는지 확인합니다.
@@ -193,7 +130,7 @@ sudo systemctl disable --now nginx
 
 ### 에이전트 설치 가이드
 
-이 절차는 코딩 에이전트가 저장소를 처음 받아 기능을 수정하고 검증할 때 사용합니다. Ubuntu 미니 PC에 실제 서비스를 설치하는 절차는 위의 사람용 안내를 따릅니다.
+이 절차는 코딩 에이전트가 저장소를 처음 받아 기능을 수정하고 검증할 때 사용합니다. 운영 배포는 기존 Nginx·Node.js 컨테이너에 연결하는 위의 사람용 안내를 따릅니다. 에이전트가 Docker 엔진, Nginx, Node.js, Tailscale 또는 systemd를 설치하지 않습니다.
 
 #### 1. 저장소 준비
 
@@ -271,8 +208,8 @@ git diff --check
 
 - 목표: 기존 모바일 박물관 프로토타입의 화면·동선을 유지하면서, 미니 PC를 원본 저장소로 사용하는 1인용 원격 웹을 제공한다.
 - 접근: 로그인 없이 Tailscale 네트워크 접근 정책으로 제한한다.
-- 원본 데이터: <code>MUSEUM_DATA_DIR</code> 아래 SQLite와 <code>uploads/</code>에 저장한다. 배포 기본 경로는 <code>/var/lib/taste-museum</code>이다.
-- 배포: Nginx(또는 호환 리버스 프록시)가 <code>dist/client/</code>를 정적으로 제공하고 <code>/api</code>와 <code>/uploads</code>를 Node HTTP 서버로 전달한다. Node 서버는 <code>127.0.0.1:8080</code>에서 SQLite와 업로드 파일을 관리한다. Cloudflare Pages는 현재 배포 대상이 아니다.
+- 원본 데이터: <code>MUSEUM_DATA_DIR</code> 아래 SQLite와 <code>uploads/</code>에 저장한다. 배포 기본 컨테이너 경로는 <code>/var/lib/taste-museum</code>이며 영속 볼륨으로 연결한다.
+- 배포: Nginx(또는 호환 리버스 프록시)가 <code>dist/client/</code>를 정적으로 제공하고 <code>/api</code>와 <code>/uploads</code>를 Node HTTP 서버로 전달한다. Node 컨테이너는 내부 네트워크의 <code>0.0.0.0:8080</code>에서 SQLite와 업로드 파일을 관리한다. Cloudflare Pages는 현재 배포 대상이 아니다.
 - 비목표: 전시실 생성·편집, 사용자 계정, 양방향 오프라인 동기화, 네이티브 화면 재작성, HEIC 썸네일 변환.
 
 ### 데이터 흐름
@@ -281,13 +218,13 @@ git diff --check
 휴대전화/PC 브라우저
         │ Tailscale 사설 네트워크
         ▼
-미니 PC Nginx :80/:443
+미니 PC Nginx 컨테이너 :80/:443
         ├── dist/client/       React 정적 파일 직접 제공
         ├── /api/*             Node.js로 reverse proxy
         └── /uploads/*         Node.js로 reverse proxy
                                       │
                                       ▼
-                              Node HTTP 서버 :8080
+                              Node.js 컨테이너 :8080
                                 ├── SQLite 메타데이터
                                 └── MUSEUM_DATA_DIR/uploads 원본 파일
 ~~~
@@ -307,7 +244,7 @@ GitHub는 소스 코드와 문서의 저장소입니다. 개인 소장품과 실
 | <code>server/backup.mjs</code> | 백업·복원·보존 개수 정리 | 복원 전 기존 폴더를 회전 보관 |
 | <code>scripts/backup.mjs</code> | 백업 CLI | <code>MUSEUM_DATA_DIR</code>, <code>MUSEUM_BACKUP_DIR</code> 사용 |
 | <code>scripts/restore.mjs</code> | 복원 CLI | 대상 교체에는 <code>--force</code> 필요 |
-| <code>server/systemd/</code> | 앱 서비스와 선택형 백업 timer | Ubuntu 배포 템플릿 |
+| <code>server/systemd/</code> | 비컨테이너 환경의 앱 서비스와 선택형 백업 timer | 컨테이너 배포에서는 기존 런타임의 supervisor를 사용 |
 | <code>public/museum/</code> | 생성한 전시 이미지와 안내도 | 앱 콘텐츠 자산 |
 | <code>tests/</code> | 서버·Sites·모바일 런타임 검증 | 새 API 동작은 서버 테스트부터 추가 |
 
