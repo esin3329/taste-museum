@@ -10,6 +10,7 @@
 
 - [사람을 위한 안내](#사람을-위한-안내)
 - [LLM / 코딩 에이전트용 컨텍스트](#llm--코딩-에이전트용-컨텍스트)
+- [에이전트 설치 가이드](#에이전트-설치-가이드)
 
 ## 사람을 위한 안내
 
@@ -177,6 +178,82 @@ sudo tailscale serve --https=8443 off
 ## LLM / 코딩 에이전트용 컨텍스트
 
 이 절은 저장소를 수정하는 LLM과 코딩 에이전트를 위한 정보입니다. 작업 전에 [AGENTS.md](AGENTS.md)를 먼저 읽고, 그 파일의 모바일 런타임 경계를 우선 적용합니다. 아래 내용은 현재 제품 방향과 구현 계약을 빠르게 파악하기 위한 요약입니다.
+
+### 에이전트 설치 가이드
+
+이 절차는 코딩 에이전트가 저장소를 처음 받아 기능을 수정하고 검증할 때 사용합니다. Ubuntu 미니 PC에 실제 서비스를 설치하는 절차는 위의 사람용 안내를 따릅니다.
+
+#### 1. 저장소 준비
+
+이미 작업 디렉터리가 있다면 새로 clone하지 말고 해당 디렉터리를 사용합니다. 새로 받을 때는 다음처럼 공개 저장소를 clone합니다.
+
+~~~sh
+git clone https://github.com/esin3329/taste-museum.git
+cd taste-museum
+node --version
+npm --version
+~~~
+
+Node.js는 24 이상이어야 합니다. 의존성은 lockfile을 기준으로 설치합니다.
+
+~~~sh
+npm ci
+~~~
+
+#### 2. 첫 검증
+
+코드를 수정하기 전에 보호된 모바일 런타임과 기존 서버·Sites 테스트를 확인합니다.
+
+~~~sh
+npm run check:runtime
+npm run test:server
+npm run test:sites
+~~~
+
+#### 3. 실행 방법 선택
+
+- 화면만 확인할 때: <code>npm run dev -- --host 127.0.0.1 --port 5187</code>를 사용합니다. 이 모드는 API 서버가 아니므로 저장·업로드를 검증할 수 없습니다.
+- 저장·업로드까지 확인할 때: 먼저 <code>npm run build</code>를 실행한 뒤 <code>npm start</code>를 사용합니다.
+- 다른 프로세스가 8080을 쓰면 <code>PORT=8180 npm start</code>처럼 별도 포트를 지정합니다. PowerShell에서는 <code>$env:PORT=8180; npm start</code>를 사용합니다.
+
+에이전트 검증에서는 실제 소장품을 사용하지 말고 임시 데이터 디렉터리를 지정합니다.
+
+~~~sh
+MUSEUM_DATA_DIR=/tmp/taste-museum-agent-data PORT=8180 npm start
+~~~
+
+PowerShell에서는 다음처럼 지정할 수 있습니다.
+
+~~~powershell
+$env:MUSEUM_DATA_DIR = Join-Path $env:TEMP "taste-museum-agent-data"
+$env:PORT = 8180
+npm start
+~~~
+
+서버가 실행되면 <code>http://127.0.0.1:8180/api/health</code>가 <code>{"ok":true}</code>를 반환하는지 확인하고, 검증이 끝난 뒤 서버를 종료합니다.
+
+#### 4. UI 테스트
+
+Playwright 브라우저가 설치되어 있지 않으면 한 번만 설치합니다.
+
+~~~sh
+npx playwright install
+npm run test:runtime
+~~~
+
+브라우저를 설치할 수 없는 환경에서는 런타임 테스트를 억지로 우회하거나 보호된 파일을 수정하지 말고, 누락된 실행 파일을 결과에 기록합니다. 화면을 확인할 수 있는 브라우저가 있으면 로비 → 수집함 → 편집·삭제 흐름을 실제로 확인합니다.
+
+#### 5. 에이전트 작업 종료 전 확인
+
+~~~sh
+npm run check:runtime
+npm run test:server
+npm run build
+npm run test:sites
+git diff --check
+~~~
+
+작업 중 생성된 임시 DB·업로드 파일·백업은 커밋하지 않습니다. 개인 데이터가 있는 <code>MUSEUM_DATA_DIR</code>나 미니 PC의 <code>/var/lib/taste-museum</code>를 테스트 대상으로 지정하지 않습니다.
 
 ### 제품 목표와 비목표
 
