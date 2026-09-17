@@ -53,12 +53,13 @@ npm start
 
 #### 1. 준비
 
-미니 PC에 Git, Node.js 24, npm, Tailscale이 설치되어 있어야 합니다. 접속할 휴대전화와 PC도 같은 Tailscale 네트워크에 연결합니다.
+미니 PC에 Git, Node.js 24, npm, Nginx(또는 호환되는 리버스 프록시), Tailscale이 설치되어 있어야 합니다. Tailscale은 사설 네트워크 연결에만 사용하고, 웹 요청 전달은 Nginx가 담당합니다. 접속할 휴대전화와 PC도 같은 Tailscale 네트워크에 연결합니다.
 
 ~~~sh
 ssh <우분투계정>@<미니PC의-Tailscale-IP>
 node --version
 npm --version
+sudo systemctl enable --now tailscaled
 tailscale status
 ~~~
 
@@ -94,20 +95,29 @@ sudo systemctl status taste-museum --no-pager
 sudo journalctl -u taste-museum -n 50 --no-pager
 ~~~
 
-#### 3. Tailscale로 원격 접속
+#### 3. Nginx 리버스 프록시 설정
 
-앱 서버는 <code>127.0.0.1:8080</code>에만 열고, Tailscale Serve가 tailnet 안에서 HTTPS로 전달하도록 구성합니다.
+Node.js 앱은 <code>127.0.0.1:8080</code>에만 열고, Nginx가 정적 파일을 제공하면서 API와 업로드 요청을 Node.js로 전달합니다. 설정 템플릿은 [server/nginx/taste-museum.conf](server/nginx/taste-museum.conf)입니다.
 
 ~~~sh
-sudo systemctl enable --now tailscaled
-sudo tailscale serve status
-sudo tailscale serve --bg --https=8443 http://127.0.0.1:8080
-sudo tailscale serve status
+sudo apt update
+sudo apt install -y nginx
+sudo install -m 0644 server/nginx/taste-museum.conf /etc/nginx/sites-available/taste-museum
+sudo ln -sfn /etc/nginx/sites-available/taste-museum /etc/nginx/sites-enabled/taste-museum
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl enable --now nginx
 ~~~
 
-명령이 출력하는 <code>https://&lt;장치이름&gt;.&lt;tailnet이름&gt;.ts.net:8443</code> 주소를 Tailscale이 켜진 휴대전화나 PC에서 엽니다. 혼자 사용할 때는 tailnet 접근 정책을 본인 기기로 제한하고, 공유기 포트 포워딩과 Tailscale Funnel은 사용하지 않습니다.
+Tailscale은 네트워크 연결만 확인합니다. <code>tailscale status</code>에서 미니 PC의 Tailscale IP를 확인한 뒤, Tailscale이 연결된 휴대전화나 PC에서 <code>http://&lt;미니PC의-Tailscale-IP&gt;/</code>를 엽니다. 별도 인증서가 있는 리버스 프록시를 사용하면 해당 HTTPS 주소를 사용합니다. Nginx는 <code>dist/client/</code>를 직접 제공하고 <code>/api/*</code>와 <code>/uploads/*</code>를 Node.js로 전달합니다.
 
-공식 문서: [Tailscale Serve 명령](https://tailscale.com/docs/reference/tailscale-cli/serve)
+Node.js가 정상인지 먼저 확인하려면 다음 명령을 사용합니다.
+
+~~~sh
+curl http://127.0.0.1:8080/api/health
+curl http://127.0.0.1/api/health
+sudo systemctl status nginx --no-pager
+~~~
 
 #### 4. 백업과 복원
 
@@ -154,17 +164,17 @@ npm run build
 sudo systemctl restart taste-museum
 ~~~
 
-Serve 설정은 같은 장치와 포트를 유지하는 한 다시 만들 필요가 없습니다. 서비스를 중지하려면 다음을 실행합니다.
+리버스 프록시 설정은 같은 경로와 포트를 유지하는 한 다시 만들 필요가 없습니다. 서비스를 중지하려면 다음을 실행합니다.
 
 ~~~sh
 sudo systemctl disable --now taste-museum
-sudo tailscale serve --https=8443 off
+sudo systemctl disable --now nginx
 ~~~
 
 #### 6. 접속 확인
 
-1. Tailscale이 연결된 PC에서 HTTPS 주소를 엽니다.
-2. 휴대전화에서 Wi-Fi를 끄고 이동통신과 Tailscale을 켠 뒤 같은 주소를 엽니다.
+1. Tailscale이 연결된 PC에서 미니 PC의 Tailscale IP와 리버스 프록시 포트로 접속합니다.
+2. 휴대전화에서 Wi-Fi 또는 이동통신과 Tailscale을 켠 뒤 같은 주소를 엽니다.
 3. 로비 → 안내도 → 전시실 → 소장품 상세를 확인합니다.
 4. 소장품 추가 → 수집함 → 전시실 배치를 확인합니다.
 5. 새로고침한 뒤 방금 올린 소장품이 남아 있는지 확인합니다.
@@ -260,19 +270,24 @@ git diff --check
 - 목표: 기존 모바일 박물관 프로토타입의 화면·동선을 유지하면서, 미니 PC를 원본 저장소로 사용하는 1인용 원격 웹을 제공한다.
 - 접근: 로그인 없이 Tailscale 네트워크 접근 정책으로 제한한다.
 - 원본 데이터: <code>MUSEUM_DATA_DIR</code> 아래 SQLite와 <code>uploads/</code>에 저장한다. 배포 기본 경로는 <code>/var/lib/taste-museum</code>이다.
-- 배포: Node HTTP 서버가 <code>dist/client/</code>를 정적으로 제공하고 <code>/api</code>를 처리한다. Cloudflare Pages는 현재 배포 대상이 아니다.
+- 배포: Nginx(또는 호환 리버스 프록시)가 <code>dist/client/</code>를 정적으로 제공하고 <code>/api</code>와 <code>/uploads</code>를 Node HTTP 서버로 전달한다. Node 서버는 <code>127.0.0.1:8080</code>에서 SQLite와 업로드 파일을 관리한다. Cloudflare Pages는 현재 배포 대상이 아니다.
 - 비목표: 전시실 생성·편집, 사용자 계정, 양방향 오프라인 동기화, 네이티브 화면 재작성, HEIC 썸네일 변환.
 
 ### 데이터 흐름
 
 ~~~text
 휴대전화/PC 브라우저
-        │ HTTPS (Tailscale Serve)
+        │ Tailscale 사설 네트워크
         ▼
-미니 PC Node HTTP 서버 :8080
-        ├── dist/client/       React 정적 파일
-        ├── /api/items         SQLite 메타데이터
-        └── /uploads/*         MUSEUM_DATA_DIR/uploads 원본 파일
+미니 PC Nginx :80/:443
+        ├── dist/client/       React 정적 파일 직접 제공
+        ├── /api/*             Node.js로 reverse proxy
+        └── /uploads/*         Node.js로 reverse proxy
+                                      │
+                                      ▼
+                              Node HTTP 서버 :8080
+                                ├── SQLite 메타데이터
+                                └── MUSEUM_DATA_DIR/uploads 원본 파일
 ~~~
 
 GitHub는 소스 코드와 문서의 저장소입니다. 개인 소장품과 실행 중인 데이터는 GitHub에 저장하지 않습니다.
@@ -284,7 +299,8 @@ GitHub는 소스 코드와 문서의 저장소입니다. 개인 소장품과 실
 | <code>src/Prototype.tsx</code> | 박물관 화면, 이동, API 상태, 입력 흐름 | 앱 기능과 화면은 여기서 수정 |
 | <code>src/prototype.css</code> | 박물관 콘텐츠 스타일 | 기존 아이보리·버건디·세리프 톤 유지 |
 | <code>src/mobile/</code> | PhoneFrame, FlowStack, 키보드, 스크롤 런타임 | <code>AGENTS.md</code> 승인 없이 수정하지 않음 |
-| <code>server/index.mjs</code> | 정적 파일, JSON API, multipart 업로드 | 데이터 디렉터리를 정적으로 노출하지 않음 |
+| <code>server/index.mjs</code> | JSON API, multipart 업로드, 업로드 파일 제공, 로컬 정적 fallback | 데이터 디렉터리를 정적으로 노출하지 않음 |
+| <code>server/nginx/taste-museum.conf</code> | 운영 리버스 프록시와 React 정적 파일 제공 | <code>/api</code>·<code>/uploads</code>만 Node.js로 전달 |
 | <code>server/db.mjs</code> | SQLite 스키마와 소장품 CRUD | 모든 입력을 검증하고 파라미터 SQL 사용 |
 | <code>server/backup.mjs</code> | 백업·복원·보존 개수 정리 | 복원 전 기존 폴더를 회전 보관 |
 | <code>scripts/backup.mjs</code> | 백업 CLI | <code>MUSEUM_DATA_DIR</code>, <code>MUSEUM_BACKUP_DIR</code> 사용 |
